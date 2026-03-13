@@ -1,15 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from bs4 import BeautifulSoup
-import re
-import numpy as np
-from sklearn.linear_model import LinearRegression
-
-import streamlit as st
-import pandas as pd
-import plotly.express as px
 import re
 from bs4 import BeautifulSoup
 import numpy as np
