@@ -7,77 +7,98 @@ import re
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-# --- DATA PARSING ENGINE ---
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import re
+from bs4 import BeautifulSoup
+import numpy as np
+from sklearn.linear_model import LinearRegression
+
 def parse_full_marks_report(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # 1. Metadata Extraction
+    # 1. Extract Course Info
     course_info = soup.find('small', class_='rptdata', string=re.compile(r'CS-|DS-'))
-    course_name = course_info.text.strip() if course_info else "Unknown Course"
+    course_name = course_info.text.strip() if course_info else "Applications of Data Science"
     
+    # 2. Find all table rows
     rows = soup.find_all('tr')
-    if len(rows) < 4:
-        return pd.DataFrame(), course_name
-
-    # 2. Extract Assessment Labels (Q1, Mid1, etc.)
-    assessment_names = [small.text.strip() for small in rows[1].find_all('small') if small.text.strip()]
     
-    # 3. Extract Totals safely
+    assessment_names = []
     total_marks = []
-    for small in rows[2].find_all('small'):
-        val = small.text.strip()
-        try:
-            total_marks.append(float(val))
-        except ValueError:
-            continue
-    
-    # Align headers and totals
-    min_len = min(len(assessment_names), len(total_marks))
-    assessment_names = assessment_names[:min_len]
-    total_marks = total_marks[:min_len]
-    assessment_map = dict(zip(assessment_names, total_marks))
-    
     data = []
-    # Student data starts from the 4th row
-    for row in rows[3:]:
-        cols = row.find_all('td')
-        if len(cols) < 3: continue
-        
-        roll_no = cols[1].text.strip()
-        student_name = cols[2].text.strip()
-        
-        for i, mark_td in enumerate(cols[3:]):
-            if i >= len(assessment_names): break
-            
-            comp_name = assessment_names[i]
-            total = assessment_map[comp_name]
-            raw_val = mark_td.text.strip().upper()
-            
-            # Absentee & Empty logic
-            if raw_val in ['A', '', 'ABSENT']:
-                obtained = 0.0
-                status = "Absent"
-            else:
-                try:
-                    # Clean non-numeric characters except decimal
-                    clean_val = re.sub(r'[^0-9.]', '', raw_val)
-                    obtained = float(clean_val) if clean_val else 0.0
-                    status = "Present"
-                except ValueError:
-                    obtained = 0.0
-                    status = "Error"
 
-            data.append({
-                "Roll No": roll_no,
-                "Name": student_name,
-                "Assessment": comp_name,
-                "Obtained": obtained,
-                "Total": total,
-                "Percentage": (obtained / total * 100) if total > 0 else 0,
-                "Status": status
-            })
+    # 3. Identify Headers and Totals
+    # In this specific UIS format:
+    # Row with assessment names usually contains 'Q1', 'Mid1', etc.
+    # Row with totals is the one before the first student (RollNo 201980055)
+    for i, row in enumerate(rows):
+        text = row.get_text()
+        
+        # Capture Assessment Names (Row containing Q1, Mid1, etc.)
+        if 'Q1' in text and 'Mid1' in text:
+            assessment_names = [small.text.strip() for small in row.find_all('small') if small.text.strip()]
+        
+        # Capture Totals (The row immediately preceding the first student)
+        # It usually contains 'Sr#', 'RollNo', 'Name' and then numbers like 10, 30, 50
+        if 'RollNo' in text and 'Name' in text:
+            # The totals are actually in the same row or the very next one
+            header_cells = row.find_all(['th', 'td'])
+            for cell in header_cells:
+                val = cell.get_text().strip()
+                if val.isdigit():
+                    total_marks.append(float(val))
+
+    # 4. Process Student Rows
+    # We look for rows that contain a Roll Number pattern (9 digits)
+    for row in rows:
+        cols = row.find_all('td')
+        if len(cols) < 5: continue
+        
+        roll_text = cols[1].get_text().strip()
+        # Check if column 1 looks like a Roll Number
+        if re.match(r'^\d{9}$', roll_text):
+            roll_no = roll_text
+            student_name = cols[2].get_text().strip()
             
+            # Marks start from index 3
+            marks_cols = cols[3:]
+            for i, mark_td in enumerate(marks_cols):
+                if i >= len(assessment_names): break
+                
+                comp_name = assessment_names[i]
+                # Default total to 10 if not found, or use index
+                total = total_marks[i] if i < len(total_marks) else 10.0
+                
+                raw_val = mark_td.get_text().strip().upper()
+                
+                if raw_val in ['A', '', 'ABSENT']:
+                    obtained = 0.0
+                    status = "Absent"
+                else:
+                    try:
+                        # Clean numeric values (e.g., '6.5' or '10')
+                        clean_val = re.sub(r'[^0-9.]', '', raw_val)
+                        obtained = float(clean_val) if clean_val else 0.0
+                        status = "Present"
+                    except ValueError:
+                        obtained = 0.0
+                        status = "Error"
+
+                data.append({
+                    "Roll No": roll_no,
+                    "Name": student_name,
+                    "Assessment": comp_name,
+                    "Obtained": obtained,
+                    "Total": total,
+                    "Percentage": (obtained / total * 100) if total > 0 else 0,
+                    "Status": status
+                })
+
     return pd.DataFrame(data), course_name
+
+# --- REST OF THE STREAMLIT CODE (Copy from previous response) ---
 
 # --- UI SETUP ---
 st.set_page_config(page_title="GIFT UIS Analytics", layout="wide", page_icon="📊")
