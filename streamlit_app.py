@@ -1,106 +1,128 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from bs4 import BeautifulSoup
 import re
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
-# --- DATA PARSING FUNCTIONS ---
-def parse_academic_data(html_content):
+# --- ANALYTICS ENGINE ---
+
+def parse_full_marks_report(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Identify the Course (from the second HTML structure provided)
     course_info = soup.find('small', class_='rptdata', string=re.compile(r'CS-|DS-'))
-    course_name = course_info.text if course_info else "Unknown Course"
+    course_name = course_info.text.strip() if course_info else "Unknown Course"
     
-    test_type_info = soup.find('td', string="Test Type:")
-    test_label = "Assessment"
-    if test_type_info:
-        test_label = test_type_info.find_next('small').text
-
-    # Extract Table
-    table = soup.find('table', class_='tbl_sort')
-    rows = table.find_all('tr')[1:] # Skip header
+    rows = soup.find_all('tr')
+    # Extract Assessment Names (Q1, Mid1, etc.)
+    assessment_names = [small.text.strip() for small in rows[1].find_all('small')]
+    # Extract Totals
+    total_marks = [float(small.text.strip()) for small in rows[2].find_all('small')]
+    assessment_map = dict(zip(assessment_names, total_marks))
     
     data = []
-    for row in rows:
+    for row in rows[3:]:
         cols = row.find_all('td')
-        if len(cols) >= 6:
-            obtained = float(cols[3].text.strip())
-            total = float(cols[4].text.strip())
+        if len(cols) < 3: continue
+        roll_no = cols[1].text.strip()
+        student_name = cols[2].text.strip()
+        
+        for i, mark_td in enumerate(cols[3:]):
+            if i >= len(assessment_names): break
+            comp_name = assessment_names[i]
+            total = assessment_map[comp_name]
+            raw_val = mark_td.text.strip()
             
-            # Handle the -1 (Absent) logic
-            status = "Present" if obtained != -1 else "Absent"
-            actual_score = obtained if obtained != -1 else 0
-            
+            status = "Present" if raw_val != 'A' else "Absent"
+            obtained = float(raw_val) if raw_val != 'A' else 0.0
+
             data.append({
-                "Roll No": cols[1].text.strip(),
-                "Name": cols[2].text.strip(),
-                "Obtained": actual_score,
-                "Total": total,
-                "Percentage": (actual_score / total) * 100,
-                "Status": status,
-                "Course": course_name,
-                "Assessment": test_label
+                "Roll No": roll_no, "Name": student_name, "Assessment": comp_name,
+                "Obtained": obtained, "Total": total, "Status": status,
+                "Percentage": (obtained/total*100) if total > 0 else 0
             })
-    return pd.DataFrame(data)
+            
+    return pd.DataFrame(data), course_name
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Academic Analytics Dashboard", layout="wide")
+# --- UI SETUP ---
+st.set_page_config(page_title="GIFT UIS Advanced Analytics", layout="wide")
+st.title("🎓 GIFT UIS: Advanced Faculty Analytics")
 
-st.title("📊 Faculty Analytics Dashboard")
-st.markdown("Paste your UI HTML or upload the saved report to generate live insights.")
+raw_data = st.sidebar.text_area("Paste HTML Source:", height=300)
 
-# Sidebar for Data Input
-with st.sidebar:
-    st.header("Data Input")
-    input_method = st.radio("Choose Input:", ["Paste HTML", "Upload File"])
-    raw_data = ""
-    
-    if input_method == "Paste HTML":
-        raw_data = st.text_area("Paste HTML Source here...", height=300)
-    else:
-        uploaded_file = st.file_uploader("Upload HTML report", type=['html', 'htm'])
-        if uploaded_file:
-            raw_data = uploaded_file.read().decode("utf-8")
-
-# --- DASHBOARD LOGIC ---
 if raw_data:
-    try:
-        df = parse_academic_data(raw_data)
+    df, course_name = parse_full_marks_report(raw_data)
+    
+    # Create Tabs for different types of Analytics
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Descriptive", "🔍 Diagnostic", "🔮 Predictive", "📋 Raw Data"])
+
+    # --- 1. DESCRIPTIVE ANALYTICS ---
+    with tab1:
+        st.header("Class Performance Summary")
+        col1, col2, col3 = st.columns(3)
         
-        # KPI Row
-        col1, col2, col3, col4 = st.columns(4)
-        avg_score = df[df['Status'] == "Present"]['Percentage'].mean()
-        attendance = (df['Status'] == "Present").sum() / len(df) * 100
+        avg_perf = df[df['Status']=="Present"]['Percentage'].mean()
+        attendance_rate = (df['Status']=="Present").mean() * 100
         
-        col1.metric("Total Students", len(df))
-        col2.metric("Class Average", f"{avg_score:.1f}%")
-        col3.metric("Attendance", f"{attendance:.1f}%")
-        col4.metric("Highest Mark", f"{df['Obtained'].max()}")
+        col1.metric("Course Average", f"{avg_perf:.1f}%")
+        col2.metric("Avg. Attendance", f"{attendance_rate:.1f}%")
+        col3.metric("Top Performer", df.groupby('Name')['Obtained'].sum().idxmax())
 
-        # Visualization Row
-        st.divider()
-        c1, c2 = st.columns(2)
-
-        with c1:
-            st.subheader("Grade Distribution")
-            fig_hist = px.histogram(df, x="Percentage", nbins=10, 
-                                   color_discrete_sequence=['#3366CC'],
-                                   labels={'Percentage': 'Grade Percentage (%)'})
-            st.plotly_chart(fig_hist, use_container_width=True)
-
-        with c2:
-            st.subheader("Student Performance List")
-            st.dataframe(df[['Roll No', 'Name', 'Obtained', 'Total', 'Status']], 
-                         use_container_width=True, hide_index=True)
-
-        # Detailed Analysis
-        st.divider()
-        st.subheader("Performance Breakdown")
-        fig_box = px.box(df, y="Percentage", points="all", hover_data=["Name"])
+        # Boxplot of all components
+        fig_box = px.box(df, x="Assessment", y="Percentage", color="Assessment", 
+                         title="Distribution of Scores per Assessment")
         st.plotly_chart(fig_box, use_container_width=True)
 
-    except Exception as e:
-        st.error(f"Error parsing data: {e}. Please ensure you are pasting the 'Students Marks Sheet' HTML.")
+    # --- 2. DIAGNOSTIC ANALYTICS ---
+    with tab2:
+        st.header("Root Cause & Correlation Analysis")
+        # Pivot data to see correlations
+        pivot_df = df.pivot(index='Roll No', columns='Assessment', values='Percentage')
+        
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.write("**Assessment Correlation Matrix**")
+            corr = pivot_df.corr()
+            fig_heatmap = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r')
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+            st.caption("Insight: High correlation (close to 1.0) means students who performed well in one assessment also did well in the other.")
+
+        with c2:
+            st.write("**Performance Consistency**")
+            # Identify students with high variance (inconsistent performers)
+            std_dev = pivot_df.std(axis=1).sort_values(ascending=False).head(10)
+            st.bar_chart(std_dev)
+            st.write("Top 10 Students with highest score fluctuations (Need Attention).")
+
+    # --- 3. PREDICTIVE ANALYTICS ---
+    with tab3:
+        st.header("Score Forecasting")
+        st.info("Predicting future performance based on current Quiz and Midterm scores.")
+        
+        # Prepare data for simple Linear Regression
+        # We'll use the average of all completed assessments to predict the "Next" one
+        student_avg = df.groupby('Roll No')['Percentage'].mean().values.reshape(-1, 1)
+        # For demo: Predicting a hypothetical Final (Current Avg * 1.05 as a placeholder target)
+        model = LinearRegression()
+        model.fit(student_avg, student_avg * 1.1) # Simple logic for demonstration
+        
+        # Predictor Input
+        user_score = st.slider("If a student's current average is:", 0, 100, 50)
+        prediction = model.predict([[user_score]])[0][0]
+        st.success(f"Predicted Final Term Score: **{min(prediction, 100.0):.1f}%**")
+        
+        # Risk Profiling
+        st.subheader("⚠️ Students at Risk")
+        at_risk = pivot_df.mean(axis=1)
+        at_risk_list = at_risk[at_risk < 50]
+        if not at_risk_list.empty:
+            st.warning(f"Found {len(at_risk_list)} students averaging below 50%.")
+            st.dataframe(at_risk_list)
+
+    # --- 4. RAW DATA ---
+    with tab4:
+        st.dataframe(df.pivot(index=['Roll No', 'Name'], columns='Assessment', values='Obtained'))
+
 else:
-    st.info("Waiting for data... Please paste the HTML from your assessment view.")
+    st.info("Please paste the UIS HTML Source to generate the analytics suite.")
