@@ -15,11 +15,26 @@ def parse_full_marks_report(html_content):
     course_name = course_info.text.strip() if course_info else "Unknown Course"
     
     rows = soup.find_all('tr')
+    
+    # --- FIXED SECTION ---
     # Extract Assessment Names (Q1, Mid1, etc.)
-    assessment_names = [small.text.strip() for small in rows[1].find_all('small')]
-    # Extract Totals
-    total_marks = [float(small.text.strip()) for small in rows[2].find_all('small')]
+    assessment_names = [small.text.strip() for small in rows[1].find_all('small') if small.text.strip()]
+    
+    # Extract Totals safely: Only keep it if it's a digit/number
+    total_marks = []
+    for small in rows[2].find_all('small'):
+        val = small.text.strip()
+        try:
+            total_marks.append(float(val))
+        except ValueError:
+            continue # Skip non-numeric values like empty strings or labels
+    
+    # Ensure our mapping only includes assessments that have a corresponding total
+    min_len = min(len(assessment_names), len(total_marks))
+    assessment_names = assessment_names[:min_len]
+    total_marks = total_marks[:min_len]
     assessment_map = dict(zip(assessment_names, total_marks))
+    # ----------------------
     
     data = []
     for row in rows[3:]:
@@ -28,14 +43,26 @@ def parse_full_marks_report(html_content):
         roll_no = cols[1].text.strip()
         student_name = cols[2].text.strip()
         
+        # Start looking for marks from column index 3 onwards
         for i, mark_td in enumerate(cols[3:]):
             if i >= len(assessment_names): break
+            
             comp_name = assessment_names[i]
             total = assessment_map[comp_name]
-            raw_val = mark_td.text.strip()
+            raw_val = mark_td.text.strip().upper() # Handle 'A' or 'a'
             
-            status = "Present" if raw_val != 'A' else "Absent"
-            obtained = float(raw_val) if raw_val != 'A' else 0.0
+            if raw_val == 'A' or raw_val == '':
+                obtained = 0.0
+                status = "Absent"
+            else:
+                try:
+                    # Remove any non-numeric noise (like extra dots)
+                    clean_val = re.sub(r'[^0-9.]', '', raw_val)
+                    obtained = float(clean_val) if clean_val else 0.0
+                    status = "Present"
+                except ValueError:
+                    obtained = 0.0
+                    status = "Error"
 
             data.append({
                 "Roll No": roll_no, "Name": student_name, "Assessment": comp_name,
