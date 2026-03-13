@@ -73,83 +73,46 @@ def parse_full_marks_report(html_content):
     return pd.DataFrame(data), course_name
 
 # --- UI SETUP ---
-st.set_page_config(page_title="GIFT UIS Advanced Analytics", layout="wide")
-st.title("🎓 GIFT UIS: Advanced Faculty Analytics")
-
-raw_data = st.sidebar.text_area("Paste HTML Source:", height=300)
-
+# --- DASHBOARD LOGIC ---
 if raw_data:
-    df, course_name = parse_full_marks_report(raw_data)
-    
-    # Create Tabs for different types of Analytics
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Descriptive", "🔍 Diagnostic", "🔮 Predictive", "📋 Raw Data"])
-
-    # --- 1. DESCRIPTIVE ANALYTICS ---
-    with tab1:
-        st.header("Class Performance Summary")
-        col1, col2, col3 = st.columns(3)
+    try:
+        df, course_name = parse_full_marks_report(raw_data)
         
-        avg_perf = df[df['Status']=="Present"]['Percentage'].mean()
-        attendance_rate = (df['Status']=="Present").mean() * 100
-        
-        col1.metric("Course Average", f"{avg_perf:.1f}%")
-        col2.metric("Avg. Attendance", f"{attendance_rate:.1f}%")
-        col3.metric("Top Performer", df.groupby('Name')['Obtained'].sum().idxmax())
+        if df.empty:
+            st.error("No student data found. Please check if the HTML pasted is the correct 'Exam Components Report' table.")
+        else:
+            # Create Tabs
+            tab1, tab2, tab3, tab4 = st.tabs(["📊 Descriptive", "🔍 Diagnostic", "🔮 Predictive", "📋 Raw Data"])
 
-        # Boxplot of all components
-        fig_box = px.box(df, x="Assessment", y="Percentage", color="Assessment", 
-                         title="Distribution of Scores per Assessment")
-        st.plotly_chart(fig_box, use_container_width=True)
+            # --- 1. DESCRIPTIVE ANALYTICS ---
+            with tab1:
+                st.header(f"Course Analysis: {course_name}")
+                
+                # Verify columns exist before calculating
+                required_cols = ['Status', 'Percentage', 'Name', 'Obtained', 'Assessment']
+                if all(col in df.columns for col in required_cols):
+                    col1, col2, col3 = st.columns(3)
+                    
+                    present_mask = df['Status'] == "Present"
+                    # Handle case where no one is marked 'Present' yet
+                    if present_mask.any():
+                        avg_perf = df[present_mask]['Percentage'].mean()
+                        attendance_rate = (present_mask).mean() * 100
+                        top_student = df.loc[df[present_mask]['Obtained'].idxmax(), 'Name']
+                        
+                        col1.metric("Course Average", f"{avg_perf:.1f}%")
+                        col2.metric("Avg. Attendance", f"{attendance_rate:.1f}%")
+                        col3.metric("Top Performer", top_student)
+                        
+                        fig_box = px.box(df, x="Assessment", y="Percentage", color="Assessment", 
+                                         title="Score Distribution per Assessment")
+                        st.plotly_chart(fig_box, use_container_width=True)
+                    else:
+                        st.warning("No students are marked as 'Present' in this data.")
+                else:
+                    st.error(f"Data Schema Error: Missing columns. Found: {list(df.columns)}")
 
-    # --- 2. DIAGNOSTIC ANALYTICS ---
-    with tab2:
-        st.header("Root Cause & Correlation Analysis")
-        # Pivot data to see correlations
-        pivot_df = df.pivot(index='Roll No', columns='Assessment', values='Percentage')
-        
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.write("**Assessment Correlation Matrix**")
-            corr = pivot_df.corr()
-            fig_heatmap = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r')
-            st.plotly_chart(fig_heatmap, use_container_width=True)
-            st.caption("Insight: High correlation (close to 1.0) means students who performed well in one assessment also did well in the other.")
+            # ... Rest of your tab logic ...
 
-        with c2:
-            st.write("**Performance Consistency**")
-            # Identify students with high variance (inconsistent performers)
-            std_dev = pivot_df.std(axis=1).sort_values(ascending=False).head(10)
-            st.bar_chart(std_dev)
-            st.write("Top 10 Students with highest score fluctuations (Need Attention).")
-
-    # --- 3. PREDICTIVE ANALYTICS ---
-    with tab3:
-        st.header("Score Forecasting")
-        st.info("Predicting future performance based on current Quiz and Midterm scores.")
-        
-        # Prepare data for simple Linear Regression
-        # We'll use the average of all completed assessments to predict the "Next" one
-        student_avg = df.groupby('Roll No')['Percentage'].mean().values.reshape(-1, 1)
-        # For demo: Predicting a hypothetical Final (Current Avg * 1.05 as a placeholder target)
-        model = LinearRegression()
-        model.fit(student_avg, student_avg * 1.1) # Simple logic for demonstration
-        
-        # Predictor Input
-        user_score = st.slider("If a student's current average is:", 0, 100, 50)
-        prediction = model.predict([[user_score]])[0][0]
-        st.success(f"Predicted Final Term Score: **{min(prediction, 100.0):.1f}%**")
-        
-        # Risk Profiling
-        st.subheader("⚠️ Students at Risk")
-        at_risk = pivot_df.mean(axis=1)
-        at_risk_list = at_risk[at_risk < 50]
-        if not at_risk_list.empty:
-            st.warning(f"Found {len(at_risk_list)} students averaging below 50%.")
-            st.dataframe(at_risk_list)
-
-    # --- 4. RAW DATA ---
-    with tab4:
-        st.dataframe(df.pivot(index=['Roll No', 'Name'], columns='Assessment', values='Obtained'))
-
-else:
-    st.info("Please paste the UIS HTML Source to generate the analytics suite.")
+    except Exception as e:
+        st.error(f"Critical System Error: {e}")
